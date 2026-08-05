@@ -1,0 +1,247 @@
+RECOLECTOR DE ORIGEN MOODLE
+Version 7.2.0-linux-rc2
+
+Este componente se ejecuta en cada Moodle de origen y produce un paquete
+estructurado compatible con el consolidador 7.0.1. No es un backup completo
+del sitio ni un único .mbz.
+
+REQUISITOS
+
+- Linux con Bash, PHP CLI y la extensión zip/ZipArchive.
+- Acceso de lectura al config.php y a los datos usados por Moodle.
+- systemd-run y permisos de sudo solamente para usar --background.
+- No requiere curl ni Composer para enviar correos: reutiliza PHPMailer
+  incluido en la instalación de Moodle.
+
+EJECUCION
+
+1. Dé permiso al lanzador:
+
+     chmod +x EXPORTAR-ORIGEN.sh
+
+2. Con la ruta predeterminada /var/www/html/config.php:
+
+     ./EXPORTAR-ORIGEN.sh campus-norte.zip
+
+3. Con una ruta distinta:
+
+     ./EXPORTAR-ORIGEN.sh campus-norte.zip /srv/moodle/config.php
+
+También se acepta campus-norte sin escribir la extensión. El nombre sin .zip
+se usa como source_id, source_name, nombre de salida y espacio de checkpoints.
+Debe iniciar en letra minúscula y contener solo a-z, 0-9, guion o guion bajo.
+Ya no está limitado a virtual, maestrias o presencial.
+
+Por defecto el resultado queda en:
+
+     salidas/campus-norte.zip
+     salidas/campus-norte.zip.sha256
+
+Para usar otro volumen sin añadir parámetros al comando:
+
+     MOODLE_COLLECTOR_OUTPUT_DIR=/mnt/exportaciones \
+       ./EXPORTAR-ORIGEN.sh campus-norte.zip
+
+SEGUNDO PLANO CON SYSTEMD
+
+Para que el proceso continúe después de cerrar SSH:
+
+     sudo ./EXPORTAR-ORIGEN.sh --background campus-norte.zip
+
+Con config.php explícito:
+
+     sudo ./EXPORTAR-ORIGEN.sh --background \
+       campus-norte.zip /srv/moodle/config.php
+
+La unidad se llama moodle-recolector-campus-norte.service. El lanzador muestra
+las rutas exactas del log y del estado. Consultas habituales:
+
+     sudo systemctl status moodle-recolector-campus-norte.service
+     tail -f salidas/logs/campus-norte-*.log
+     cat salidas/campus-norte.status.json
+
+Cuando se usa sudo, la unidad se ejecuta como el usuario que invocó sudo. Para
+elegir otro usuario del sistema, por ejemplo el del servidor web:
+
+     sudo env MOODLE_COLLECTOR_RUN_AS_USER=www-data \
+       ./EXPORTAR-ORIGEN.sh --background campus-norte.zip
+
+Ese usuario debe poder leer config.php y escribir en el directorio de salida.
+El sistema impide iniciar otra unidad activa con el mismo identificador.
+
+CORREOS SMTP OPCIONALES
+
+1. Copie la plantilla:
+
+     cp smtp-config.example.json smtp-config.json
+
+2. Complete servidor, puerto, cifrado, credenciales, remitente y destinatarios.
+3. Cambie enabled a true y proteja el archivo:
+
+     chmod 600 smtp-config.json
+
+Valores de encryption: tls, ssl o none. El timeout debe estar entre 3 y 30
+segundos. La notificación se envía al terminar correctamente o al fallar.
+
+Si no existe smtp-config.json, enabled es false, falta PHPMailer o el servidor
+SMTP no responde, el recolector conserva el resultado original. El correo es
+solo una alerta: el archivo *.status.json y el log son la evidencia oficial.
+Nunca se incluyen credenciales, usuarios Moodle ni contenido académico en el
+mensaje.
+
+Para ubicar la configuración fuera de esta carpeta:
+
+     MOODLE_COLLECTOR_SMTP_CONFIG=/etc/moodle-recolector/smtp.json \
+       ./EXPORTAR-ORIGEN.sh campus-norte.zip
+
+CONTENIDO DEL ZIP
+
+  cursos/*.mbz
+  inventarios/*.json
+  identidades.json
+  inventario-origen.json
+  plugins.json
+  checkpoints/*.json
+  manifest.json
+  checksums.sha256
+
+OPTIMIZACION DE SHA-256
+
+Durante una ejecución nueva, cada .mbz se copia desde el backup oficial de
+Moodle y calcula su SHA-256 con los mismos bloques leídos. El sellado reutiliza
+ese resultado desde el checkpoint y comprueba existencia, tamaño y fecha de
+modificación, sin volver a recorrer el .mbz únicamente para recalcular el hash.
+
+Al cerrar el ZIP exterior se calcula una sola vez su SHA-256 y se escribe en el
+archivo contiguo nombre.zip.sha256. El lanzador reutiliza ese valor y no vuelve
+a leer el ZIP completo. Los archivos .mbz siguen almacenándose con CM_STORE,
+sin recompresión dentro del ZIP exterior.
+
+Si el directorio de trabajo contiene checkpoints creados por la versión 7.1.0,
+su primera reanudación vuelve a verificar los artefactos una vez y añade los
+metadatos necesarios. Las reanudaciones siguientes usan la ruta optimizada.
+
+VALIDACION EXHAUSTIVA BAJO DEMANDA
+
+Para auditar un paquete después de copiarlo o cuando exista una sospecha:
+
+     chmod +x VALIDAR-PAQUETE.sh
+     ./VALIDAR-PAQUETE.sh /ruta/campus-norte.zip
+
+El segundo parámetro es opcional y solo indica dónde cargar PHPMailer para la
+notificación SMTP cuando Moodle no usa la ruta predeterminada:
+
+     ./VALIDAR-PAQUETE.sh /ruta/campus-norte.zip \
+       /srv/moodle/config.php
+
+Para que la auditoría continúe después de cerrar SSH:
+
+     sudo ./VALIDAR-PAQUETE.sh --background \
+       /ruta/campus-norte.zip
+
+Con config.php explícito:
+
+     sudo ./VALIDAR-PAQUETE.sh --background \
+       /ruta/campus-norte.zip /srv/moodle/config.php
+
+La unidad se llama moodle-recolector-validacion-campus-norte.service. El
+lanzador muestra las rutas exactas. Consultas habituales:
+
+     sudo systemctl status \
+       moodle-recolector-validacion-campus-norte.service
+     tail -f /ruta/logs/campus-norte-validacion-*.log
+     cat /ruta/campus-norte.validacion.status.json
+
+Si se configuró smtp-config.json, el validador reutiliza la misma configuración
+y envía al finalizar uno de estos asuntos:
+
+     [Recolector Moodle] VALIDACIÓN OK - campus-norte
+     [Recolector Moodle] VALIDACIÓN ERROR - campus-norte
+
+El correo también es no bloqueante: un problema SMTP no convierte una auditoría
+correcta en fallida ni oculta el código de salida real del validador.
+
+El validador no requiere config.php ni acceso a Moodle. Sí requiere PHP CLI y
+ZipArchive. Realiza deliberadamente las lecturas costosas que se retiraron del
+flujo normal:
+
+- recalcula el SHA-256 del ZIP y lo compara con nombre.zip.sha256 si existe;
+- abre el ZIP con comprobación de consistencia;
+- recalcula el SHA-256 de cada archivo listado en checksums.sha256;
+- detecta archivos faltantes, inesperados, duplicados o con rutas inseguras;
+- cruza manifiesto, inventario del origen, checkpoints e inventarios de curso;
+- verifica tamaños y que los .mbz no hayan sido recomprimidos.
+
+El resultado queda junto al paquete:
+
+     campus-norte.validacion.json
+
+También se generan:
+
+     campus-norte.validacion.status.json
+     logs/campus-norte-validacion-AAAAmmddTHHMMSSZ-PID.log
+
+Código de salida 0 significa validación correcta; código 1 indica alguna
+inconsistencia y el reporte enumera cada ruta afectada, valores esperados y
+valores obtenidos. Si falta nombre.zip.sha256 se registra una advertencia, pero
+la auditoría interna continúa.
+
+En una extracción institucional, coordine una ventana de mantenimiento o de
+cambios congelados. Los cursos se respaldan secuencialmente y el paquete no
+representa una instantánea atómica si el sitio continúa cambiando.
+
+El recolector:
+
+- usa las API oficiales de backup de Moodle;
+- procesa un curso a la vez;
+- conserva checkpoints y puede reanudarse;
+- no modifica cursos, usuarios, roles ni matrículas;
+- sí usa archivos temporales y registros internos propios del backup;
+- sella cada artefacto con SHA-256 y reutiliza los hashes de checkpoints;
+- incluye datos personales, por lo que ZIP, log, estado y SMTP deben protegerse.
+
+No active la confianza automática en OAuth username como google_sub sin
+verificación institucional documentada.
+
+REFERENCIA RAPIDA DE COMANDOS
+
+Exportar con config.php predeterminado:
+
+     ./EXPORTAR-ORIGEN.sh campus-norte.zip
+
+Exportar indicando config.php:
+
+     ./EXPORTAR-ORIGEN.sh campus-norte.zip /srv/moodle/config.php
+
+Exportar en segundo plano con config.php predeterminado:
+
+     sudo ./EXPORTAR-ORIGEN.sh --background campus-norte.zip
+
+Exportar en segundo plano indicando config.php:
+
+     sudo ./EXPORTAR-ORIGEN.sh --background \
+       campus-norte.zip /srv/moodle/config.php
+
+Validar con config.php predeterminado para SMTP:
+
+     ./VALIDAR-PAQUETE.sh /ruta/campus-norte.zip
+
+Validar indicando config.php para SMTP:
+
+     ./VALIDAR-PAQUETE.sh /ruta/campus-norte.zip \
+       /srv/moodle/config.php
+
+Validar en segundo plano con config.php predeterminado para SMTP:
+
+     sudo ./VALIDAR-PAQUETE.sh --background \
+       /ruta/campus-norte.zip
+
+Validar en segundo plano indicando config.php para SMTP:
+
+     sudo ./VALIDAR-PAQUETE.sh --background \
+       /ruta/campus-norte.zip /srv/moodle/config.php
+
+Ayuda integrada:
+
+     ./EXPORTAR-ORIGEN.sh --help
+     ./VALIDAR-PAQUETE.sh --help
