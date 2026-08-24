@@ -1,363 +1,353 @@
-# Migración y consolidación Moodle UFPS
+# Moodle Consolidation Toolkit
 
-Herramientas para recolectar información de varias instancias Moodle de origen y
-consolidarla, de forma controlada y auditable, en un Moodle 5.2.1 nuevo.
+Conjunto de herramientas para extraer información de varias instancias Moodle
+de origen, producir paquetes portátiles verificables y consolidarlos de forma
+controlada en una única plataforma Moodle de destino.
 
-Este repositorio contiene dos componentes independientes:
+El proyecto separa claramente dos responsabilidades:
 
-| Componente | Versión de entrega | Propósito |
-|---|---|---|
-| [Recolector](./Recolector/README.md) | `7.2.1-linux-rc2` | Ejecutarse en cada Moodle de origen y producir un paquete ZIP sellado. |
-| [Consolidador](./Consolidador/README.md) | `7.2.1-linux-rc6` | Recibir entre 2 y 32 paquetes y migrarlos a un Moodle 5.2.1 nuevo. |
+1. **Recolector:** opera sobre cada Moodle de origen en modo de solo lectura y
+   genera un ZIP sellado.
+2. **Consolidador:** recibe los ZIP, concilia identidades y roles, restaura los
+   cursos y verifica el resultado sobre el Moodle de destino.
 
-> Las etiquetas `rc` identifican versiones candidatas. Antes de utilizarlas en
-> producción deben completar una ejecución integral en el entorno institucional
-> de ensayo, con paquetes reales, OAuth2, SMTP, plugins y pruebas funcionales.
+Cada componente mantiene su propio manual técnico. Este README presenta la
+arquitectura general, el flujo recomendado y la relación entre ambos.
 
-## Objetivo
-
-El flujo permite consolidar cursos, usuarios, vínculos OAuth, roles, matrículas,
-actividades y archivos de distintas instancias sin conectar el Consolidador
-directamente a las bases de datos de origen.
+## Arquitectura general
 
 ```mermaid
-flowchart LR
-    A["Moodle origen A"] --> R1["Recolector"]
-    B["Moodle origen B"] --> R2["Recolector"]
-    C["Moodle origen N"] --> R3["Recolector"]
-    R1 --> Z["ZIP sellados"]
-    R2 --> Z
-    R3 --> Z
-    Z --> K["Consolidador"]
-    K --> M["Moodle 5.2.1"]
+flowchart TD
+    A[Instancias Moodle de origen] --> B[Recolector]
+    B --> C[Paquetes ZIP sellados]
+    C --> D[Consolidador]
+    D --> E[Moodle unificado]
 ```
 
-Cada origen se procesa de manera independiente. El Consolidador trabaja después
-con los ZIP sellados y no necesita consultar nuevamente las instancias de
-origen.
-
-## Estructura esperada del repositorio
+Ejemplo para tres instancias:
 
 ```text
-.
+Pregrado virtual ──→ pregrado-virtual.zip ──┐
+Maestrías virtuales → maestrias.zip ─────────┼─→ Consolidador → Moodle unificado
+Pregrado presencial → presencial.zip ────────┘
+```
+
+Los paquetes se procesan como artefactos de solo lectura y llevan manifiesto,
+inventarios, checkpoints y hashes SHA-256 para detectar cambios o corrupción.
+
+## Componentes del repositorio
+
+```text
+moodle-consolidation-toolkit/
 ├── README.md
-├── Recolector/
-│   ├── README.md
-│   ├── VERSION.txt
-│   ├── EXPORTAR-ORIGEN.sh
-│   ├── VALIDAR-PAQUETE.sh
-│   ├── smtp-config.example.json
-│   └── scripts/
-└── Consolidador/
-    ├── README.md
-    ├── VERSION.txt
-    ├── CONFIGURAR.sh
-    ├── PREPARAR-DESTINO.sh
-    ├── INICIAR-CONSOLIDACION.sh
-    ├── INICIAR-SEGUNDO-PLANO.sh
-    ├── ESTADO.sh
-    ├── DETENER.sh
-    ├── PUBLICAR-SITIO.sh
-    ├── GESTIONAR-CONFIG.sh
-    ├── compose.yaml
-    ├── config/
-    ├── config-manager/
-    ├── docker/
-    └── scripts/
+├── recolector/
+│   └── README.md
+└── consolidador/
+    └── README.md
 ```
 
-## Alcance
+| Componente | Responsabilidad | Documentación |
+|---|---|---|
+| Recolector | Extrae identidades, estructura, plugins, datos académicos y respaldos de cursos desde cada Moodle de origen. | [Manual del Recolector](./recolector/README.md) |
+| Consolidador | Importa paquetes, reconcilia identidades y roles, prepara el destino, restaura cursos y ejecuta verificaciones. | [Manual del Consolidador](./consolidador/README.md) |
 
-El proyecto incluye:
+## Recolector estable 7.4.1
 
-- Extracción de identidades, roles, matrículas e inventarios.
-- Backups oficiales `.mbz`, uno por curso.
-- Checkpoints reanudables y hashes SHA-256.
-- Auditoría exhaustiva opcional de cada paquete.
-- Conciliación de identidades entre orígenes.
-- Conservación de vínculos Google OAuth cuando existe evidencia verificable.
-- Normalización de roles y tratamiento explícito de excepciones.
-- Restauración piloto antes del lote completo.
-- Restauración secuencial y verificación final.
-- Notificaciones SMTP opcionales.
-- Ejecución interactiva o automática en segundo plano.
-- Copia integral sellada del Moodle consolidado.
-- Gestión persistente, versionada y reversible de ajustes de `config.php`.
+La versión estable actual del Recolector es:
 
-El proyecto no incluye:
-
-- Configuración automática del proyecto OAuth en Google Cloud.
-- Registro de dominios, DNS, certificados TLS o proxy institucional.
-- Resolución automática de conflictos que requieren decisión administrativa.
-- Instalación automática de plugins de terceros no incluidos en Moodle.
-- Custodia externa de credenciales o respaldos institucionales.
-- Promoción automática a producción sin aprobación del administrador.
-
-## Flujo general de operación
-
-### 1. Preparar una ventana de recolección
-
-Coordine una ventana de mantenimiento o de cambios congelados para cada Moodle
-de origen. Los cursos se respaldan secuencialmente; si el sitio cambia durante
-la ejecución, el conjunto completo no representa una instantánea atómica.
-
-Compruebe en cada servidor:
-
-- PHP CLI y la extensión `zip`/`ZipArchive`.
-- Lectura del `config.php` de Moodle.
-- Espacio para todos los `.mbz`, el ZIP final y archivos temporales.
-- Permisos de escritura en el directorio de salida.
-- `systemd-run` y `sudo` si la ejecución continuará después de cerrar SSH.
-
-### 2. Ejecutar el Recolector en cada origen
-
-Ejemplo con la ubicación predeterminada de Moodle:
-
-```bash
-cd Recolector
-chmod +x EXPORTAR-ORIGEN.sh VALIDAR-PAQUETE.sh
-./EXPORTAR-ORIGEN.sh virtual.zip
+```text
+7.4.1-linux
 ```
 
-Ejemplo con un `config.php` en otra ruta:
+Principales mejoras integradas:
 
-```bash
-./EXPORTAR-ORIGEN.sh maestrias.zip /srv/moodle/config.php
+- workers automáticos según CPU disponible, con máximo de cuatro;
+- cola dinámica de cursos, sin divisiones fijas por mitades o pares/impares;
+- inventario global construido una sola vez y reutilizado por los workers;
+- fases detalladas, heartbeat, porcentaje, pendientes y ETA;
+- correos SMTP de inicio, progreso periódico y finalización;
+- fallos SMTP no bloqueantes y con diagnóstico explícito;
+- corrección de la ruta efectiva de destino mediante `--output-dir`;
+- almacenamiento temporal rápido opcional mediante `--temp-dir`;
+- adopción de respaldos Moodle `.mbz` existentes en formato ZIP o TGZ;
+- modo `--reuse-only` para impedir la regeneración de cursos;
+- reanudación rápida mediante manifiesto y checkpoints;
+- limpieza automática y limitada al curso que haya quedado parcial;
+- copia y SHA-256 en una sola lectura;
+- sellado final sin recomprimir internamente los MBZ;
+- validación exhaustiva independiente del paquete generado.
+
+La documentación completa, opciones, monitoreo y diagnóstico se encuentran en
+el [README del Recolector](./recolector/README.md).
+
+## Flujo óptimo recomendado
+
+La generación de cada MBZ suele ser la etapa más costosa. El flujo más
+eficiente consiste en adelantarla desde Moodle durante una ventana nocturna y
+ejecutar después el Recolector en modo de reutilización obligatoria.
+
+```text
+Moodle genera los MBZ
+        ↓
+Directorio externo de respaldos
+        ↓
+Recolector --reuse-only
+        ↓
+Identidades + inventarios + checkpoints
+        ↓
+ZIP sellado + SHA-256
+        ↓
+Validación exhaustiva
+        ↓
+Transferencia al servidor destino
+        ↓
+Consolidador
 ```
 
-Para un proceso que sobreviva al cierre de SSH:
+Este camino adelanta la etapa de backup sin introducir una restauración física
+completa de base de datos, `moodledata` y código. Para el flujo habitual de
+consolidación no es necesario levantar una copia completa del Moodle de origen.
+
+### 1. Generar respaldos directos de Moodle
+
+Moodle incluye el comando oficial `admin/cli/backup.php`:
 
 ```bash
-sudo ./EXPORTAR-ORIGEN.sh --background presencial.zip \
+sudo -u www-data php /srv/moodle/admin/cli/backup.php \
+  --courseid=123 \
+  --destination=/mnt/respaldos-moodle/pregrado
+```
+
+También pueden utilizarse respaldos automáticos enviados a un directorio
+externo, siempre que se compruebe que todos los cursos requeridos terminaron
+como `OK` y que no fueron omitidos por reglas de cursos ocultos o sin cambios.
+
+### 2. Ejecutar el Recolector usando únicamente los MBZ
+
+```bash
+cd /srv/moodle-consolidation-toolkit/recolector
+
+sudo MOODLE_COLLECTOR_RUN_AS_USER=www-data \
+  ./EXPORTAR-ORIGEN.sh \
+  --background \
+  --workers=auto \
+  --notify-every=10 \
+  --output-dir=/mnt/exportaciones \
+  --reuse-backups=/mnt/respaldos-moodle/pregrado \
+  --reuse-only \
+  pregrado \
   /srv/moodle/config.php
 ```
 
-La salida normal contiene el ZIP y su hash externo:
+Con `--reuse-only`:
+
+- cada curso debe tener un MBZ compatible;
+- el Recolector nunca genera un respaldo faltante;
+- los MBZ originales no se modifican;
+- cualquier rechazo identifica el curso y la causa;
+- una ejecución exitosa debe terminar con `created=0` y `adopted=N`.
+
+### 3. Validar el paquete
+
+```bash
+./VALIDAR-PAQUETE.sh \
+  /mnt/exportaciones/pregrado.zip \
+  /srv/moodle/config.php
+```
+
+```bash
+cd /mnt/exportaciones
+sha256sum -c pregrado.zip.sha256
+```
+
+No se debe transferir el paquete al destino hasta obtener:
 
 ```text
-salidas/virtual.zip
-salidas/virtual.zip.sha256
+VALIDACION_OK
+pregrado.zip: OK
 ```
 
-Consulte la [guía completa del Recolector](./Recolector/README.md) para SMTP,
-Docker, seguimiento, reanudación y auditoría exhaustiva.
+### 4. Repetir por cada instancia de origen
 
-### 3. Auditar y transferir los paquetes
-
-La auditoría exhaustiva es opcional, pero se recomienda antes de transportar
-un paquete a otro servidor y nuevamente si existe alguna sospecha de daño:
-
-```bash
-./VALIDAR-PAQUETE.sh salidas/virtual.zip
-```
-
-Verifique además el hash externo:
-
-```bash
-cd salidas
-sha256sum -c virtual.zip.sha256
-```
-
-Transfiera por un canal institucional seguro:
-
-- El archivo `.zip` requerido por el Consolidador.
-- El archivo `.zip.sha256` para verificar el transporte.
-- El reporte `.validacion.json`, si se ejecutó la auditoría exhaustiva.
-
-El Consolidador solo recibe los `.zip` dentro de `Consolidador/copias/`. Los
-archivos auxiliares deben conservarse como evidencia fuera de esa carpeta.
-
-### 4. Preparar el destino
-
-En el servidor Linux/Ubuntu de ensayo:
-
-```bash
-cd Consolidador
-chmod +x ./*.sh config-manager/*.sh docker/*.sh
-./moodle-consolidation.sh verificar
-./CONFIGURAR.sh
-```
-
-`CONFIGURAR.sh` solicita la URL definitiva, el administrador, el puerto local,
-las notificaciones SMTP y el directorio persistente para los ajustes
-administrados de `config.php`.
-
-Si no se preparó el destino desde el asistente de configuración:
-
-```bash
-./PREPARAR-DESTINO.sh
-```
-
-### 5. Colocar las entradas
-
-Copie entre 2 y 32 ZIP sellados:
+El mismo procedimiento produce un paquete independiente por instancia:
 
 ```text
-Consolidador/copias/virtual.zip
-Consolidador/copias/maestrias.zip
-Consolidador/copias/presencial.zip
+pregrado-virtual.zip
+maestrias.zip
+presencial.zip
 ```
 
-No agregue, retire ni reemplace paquetes después de la primera intención de
-escritura en el destino. La herramienta crea un bloqueo auditable para impedirlo.
+Cada paquete conserva su identificador de origen y debe mantenerse junto a su
+archivo `.zip.sha256` y reporte de validación.
 
-### 6. Iniciar la consolidación
+### 5. Ejecutar el Consolidador
 
-Modo interactivo:
+Después de validar y transferir todos los ZIP, se continúa con el flujo guiado
+del Consolidador:
+
+- validación e importación de paquetes;
+- inventario conjunto de fuentes;
+- conciliación de identidades;
+- normalización y equivalencia de roles;
+- preparación y preflight del Moodle de destino;
+- validación de OAuth2;
+- restauración de un curso piloto;
+- restauración controlada de los cursos restantes;
+- verificaciones académicas y técnicas;
+- generación de reportes y evidencias finales.
+
+Los comandos, fases y criterios de aceptación pertenecen al
+[manual específico del Consolidador](./consolidador/README.md).
+
+## Uso directo sin respaldos existentes
+
+El Recolector puede generar los MBZ por sí mismo:
 
 ```bash
-./INICIAR-CONSOLIDACION.sh
+sudo ./EXPORTAR-ORIGEN.sh --background pregrado
 ```
 
-Modo automático y reanudable en segundo plano:
+Valores predeterminados:
+
+- salida en `recolector/salidas/`;
+- `config.php` en `/var/www/html/config.php`;
+- workers en `auto`, máximo cuatro;
+- progreso SMTP cada diez minutos si está configurado;
+- almacenamiento temporal habitual de Moodle.
+
+Para una ruta explícita:
 
 ```bash
-./INICIAR-SEGUNDO-PLANO.sh
+sudo ./EXPORTAR-ORIGEN.sh --background \
+  --output-dir=/mnt/exportaciones \
+  pregrado \
+  /srv/moodle/config.php
 ```
 
-Seguimiento habitual:
+## Reanudación y recuperación
 
-```bash
-./ESTADO.sh
-./moodle-consolidation.sh logs
-tail -F reports/asistente-consolidacion.log
-```
+Si una ejecución se interrumpe, se repite exactamente el mismo comando con el
+mismo identificador, ruta de salida y `config.php`.
 
-Si una etapa queda en `blocked` o `waiting_manual`, corrija solamente la causa
-indicada y vuelva a ejecutar el mismo iniciador. Los checkpoints aprobados se
-reutilizan.
+El Recolector:
 
-### 7. Configurar Google OAuth2
+1. valida el manifiesto de ejecución;
+2. reutiliza identidades, plugins e inventario global;
+3. valida los checkpoints completos;
+4. elimina únicamente el artefacto parcial del curso interrumpido;
+5. continúa con los cursos pendientes;
+6. sella el ZIP cuando todos los cursos terminan correctamente.
 
-La etapa 3 pausa deliberadamente para que el administrador configure Google en
-el panel de Moodle. La URI de retorno exacta se genera en:
+No se deben eliminar manualmente los checkpoints. `--restart` se utiliza solo
+cuando se desea iniciar deliberadamente una ejecución nueva.
+
+El Consolidador también trabaja por etapas verificables y conserva evidencia
+para evitar repetir escrituras ya aprobadas. Consulte su README antes de
+reiniciar o modificar una ejecución en curso.
+
+## Integridad y trazabilidad
+
+El flujo aplica controles en varias capas:
+
+- SHA-256 durante la copia de cada MBZ;
+- checkpoints por curso;
+- manifiesto por paquete de origen;
+- archivo interno `checksums.sha256`;
+- SHA-256 externo del ZIP sellado;
+- validador exhaustivo antes de la transferencia;
+- paquetes tratados como solo lectura por el Consolidador;
+- logs y estados JSON para auditoría;
+- detención controlada si un artefacto cambia.
+
+La validación del Recolector comprueba estructura, hashes, inventarios,
+checkpoints, manifiesto y correspondencia de cursos. La conciliación de
+identidades y las verificaciones del Moodle destino corresponden al
+Consolidador.
+
+## Identidades y OAuth2
+
+Los paquetes conservan identidades Moodle y evidencia OAuth2 de manera
+separada. El Recolector no inventa identificadores `google_sub`: solamente
+declara los valores verificables disponibles en el origen.
+
+El Consolidador utiliza las identidades de todos los paquetes para:
+
+- detectar cuentas correspondientes a la misma persona;
+- separar coincidencias ambiguas;
+- preservar administradores y roles académicos;
+- aplicar decisiones institucionales de conciliación;
+- preparar el acceso OAuth2 en el destino.
+
+Las fusiones dudosas deben resolverse mediante los mecanismos de revisión del
+Consolidador, no editando manualmente los ZIP de origen.
+
+## Requisitos generales
+
+### Orígenes
+
+- Moodle 4.5.x para el alcance probado del Recolector 7.4.1.
+- PHP CLI 8.1 o posterior.
+- Extensiones PHP `zip` y `dom`.
+- Acceso de lectura al `config.php`, base de datos y archivos Moodle.
+- Espacio suficiente para MBZ, trabajo y ZIP final.
+- systemd para ejecución nativa con `--background`.
+
+### Destino
+
+- Servidor Linux según los requisitos del Consolidador.
+- Docker Engine y Docker Compose cuando la distribución del Consolidador los
+  utilice.
+- Moodle destino nuevo o preparado según el manual correspondiente.
+- Almacenamiento persistente y restringido.
+- Acceso administrativo para OAuth2, DNS, TLS y verificaciones finales.
+
+## Seguridad operativa
+
+- No publicar ZIP, MBZ, inventarios ni archivos de identidad en GitHub.
+- No almacenar credenciales SMTP reales dentro del repositorio.
+- Proteger `smtp-config.json` con permisos restrictivos.
+- Transferir paquetes por canales institucionales cifrados.
+- Verificar SHA-256 antes y después de cada transferencia.
+- Restringir lectura y escritura en directorios de respaldo y exportación.
+- Evitar ejecutar herramientas sobre un destino con información no respaldada.
+- Conservar reportes y logs requeridos como evidencia del proceso.
+
+El repositorio debe contener únicamente código, plantillas y documentación.
+Los artefactos de producción pertenecen a almacenamiento operativo protegido.
+
+## Evidencia de aceptación del Recolector 7.4.1
+
+La versión estable fue probada en un laboratorio con Moodle 4.5.13, PHP 8.3 y
+MariaDB 10.11:
+
+| Comprobación | Resultado |
+|---|---:|
+| Cursos | 12 |
+| MBZ directos de Moodle | 12 |
+| MBZ adoptados | 12 |
+| MBZ regenerados | 0 |
+| Cursos fallidos | 0 |
+| Archivos internos verificados | 40/40 |
+| Advertencias del validador | 0 |
+| SHA-256 exterior | Correcto |
 
 ```text
-Consolidador/reports/oauth2-configuracion-manual.txt
+EXPORT_HEARTBEAT completed=12/12 created=0 adopted=12 failed=0
+RECOLECTOR_OK
+VALIDACION_OK archivos=40 cursos=12 advertencias=0
+laboratorio.zip: OK
 ```
 
-El `Client ID` y el `Client secret` se introducen directamente en Moodle. No se
-guardan en los archivos del Consolidador ni deben subirse al repositorio.
+## Alcance de la documentación
 
-### 8. Revisar evidencias y publicar
+Este README global responde:
 
-El proceso debe finalizar con:
+- qué problema resuelve el toolkit;
+- cómo se relacionan Recolector y Consolidador;
+- cuál es el flujo operativo recomendado;
+- dónde consultar los comandos detallados.
 
-```text
-CONSOLIDATION_ASSISTANT_OK
-```
+Para opciones, parámetros, diagnósticos y procedimientos completos utilice:
 
-Después de revisar el informe final, el estado de OAuth y la copia integral:
-
-```bash
-./PUBLICAR-SITIO.sh
-```
-
-La publicación activa el cron normal únicamente si las validaciones de cierre
-son correctas.
-
-Consulte la [guía completa del Consolidador](./Consolidador/README.md) para las
-16 etapas, resolución de conflictos, plugins, publicación y gestión posterior.
-
-## Responsabilidades operativas
-
-| Responsable | Actividades principales |
-|---|---|
-| Administrador de cada origen | Coordinar ventana, ejecutar Recolector, custodiar ZIP y verificar hash. |
-| Operador de consolidación | Preparar destino, cargar paquetes, seguir etapas y conservar evidencias. |
-| Administrador Moodle | Configurar OAuth2, revisar roles, identidades, plugins y pruebas funcionales. |
-| Administrador de infraestructura | DNS, TLS, proxy, firewall, almacenamiento, backups y monitoreo. |
-| Responsable institucional | Aprobar conflictos, criterios de aceptación y promoción a producción. |
-
-Una misma persona puede asumir varios roles, pero las decisiones manuales deben
-quedar identificadas en los archivos de resolución y en las evidencias del
-proceso.
-
-## Datos sensibles y repositorio
-
-Los paquetes y resultados contienen datos personales y académicos. El
-repositorio debe distribuir únicamente código, plantillas vacías y
-documentación.
-
-No suba a Git:
-
-```text
-Recolector/smtp-config.json
-Recolector/salidas/
-Consolidador/.env
-Consolidador/copias/*.zip
-Consolidador/exports/
-Consolidador/reports/
-Consolidador/managed-config/
-```
-
-Tampoco publique:
-
-- `config.php` de ninguna instancia.
-- Credenciales SMTP, de base de datos o Google OAuth.
-- Archivos `.mbz`, hashes asociados a respaldos reales o logs institucionales.
-- Archivos de resolución ya diligenciados con datos personales.
-- La copia integral `paquete-sitio-consolidado.zip`.
-
-Los siguientes archivos pueden permanecer en el repositorio solamente como
-plantillas sin datos reales:
-
-```text
-Consolidador/config/identity_resolutions.csv
-Consolidador/config/phase6-role-resolutions.csv
-Consolidador/config/oauth2.json
-Recolector/smtp-config.example.json
-```
-
-`Consolidador/.env` usa permisos `600`; las credenciales SMTP se almacenan allí
-en base64, que no es cifrado. Proteja el servidor y excluya ese archivo de
-respaldos o repositorios no autorizados.
-
-## Criterios mínimos de aceptación
-
-Antes de producción deben quedar documentados:
-
-- Integridad distributiva de ambas herramientas.
-- Auditoría correcta de todos los paquetes de origen.
-- Compatibilidad o instalación de todos los plugins utilizados.
-- Cero conflictos de identidad sin resolver.
-- Cero excepciones de rol sin decisión aprobada.
-- Curso piloto restaurado y verificado.
-- Lote completo restaurado sin diferencias.
-- Inicio de sesión real con cuentas representativas de estudiante, docente y
-  gestor.
-- OAuth2 verificado y sin linked logins pendientes.
-- Notificaciones SMTP probadas, si se habilitaron.
-- Configuración administrada verificada y prueba de reversión documentada.
-- Copia integral sellada y restauración ensayada en un entorno separado.
-- DNS, TLS, proxy y cron aprobados por infraestructura.
-- Revisión del informe final y autorización formal de publicación.
-
-## Referencia rápida
-
-### Recolector
-
-```bash
-./EXPORTAR-ORIGEN.sh --help
-./VALIDAR-PAQUETE.sh --help
-```
-
-### Consolidador
-
-```bash
-./moodle-consolidation.sh --help
-./GESTIONAR-CONFIG.sh ayuda
-```
-
-## Soporte y diagnóstico
-
-Al reportar una incidencia, comparta únicamente información no sensible:
-
-- Versión mostrada por `VERSION.txt`.
-- Etapa y estado general.
-- Mensaje de error exacto, ocultando rutas o datos personales cuando aplique.
-- Resultado de integridad de la distribución.
-- Nombres de archivos de evidencia pertinentes, sin adjuntar credenciales.
-
-No comparta `.env`, `config.php`, ZIP institucionales o dumps de base de datos
-por canales no autorizados.
+- [README del Recolector](./recolector/README.md)
+- [README del Consolidador](./consolidador/README.md)
