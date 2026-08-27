@@ -80,6 +80,39 @@ Principales mejoras integradas:
 La documentación completa, opciones, monitoreo y diagnóstico se encuentran en
 el [README del Recolector](./recolector/README.md).
 
+## Consolidador estable 7.3.0
+
+La versión estable actual del Consolidador es:
+
+```text
+7.3.0-linux
+```
+
+Principales mejoras integradas:
+
+- flujo controlado de 16 etapas para procesar entre 2 y 32 paquetes sellados;
+- pool dinámico con `--workers=auto`, limitado a cuatro procesos simultáneos;
+- cursos de mayor peso primero para evitar una cola residual dominada por un
+  único curso grande;
+- una sola extracción de cada MBZ, directamente en el temporal utilizado por
+  Moodle;
+- eliminación de árboles `raw`, copias normalizadas y recorridos SHA
+  redundantes durante la restauración;
+- planes livianos por curso, sin recargar el inventario completo en cada
+  worker;
+- verificación exhaustiva por curso y cierre incremental basado en evidencia;
+- checkpoints atómicos y reanudación sin repetir cursos aprobados;
+- recuperación automática de permisos y temporales después de una
+  interrupción;
+- montaje único de los scripts de lectura dentro del contenedor;
+- copia integral final por streaming y compresión multihilo con `pigz`;
+- conciliación de identidades, roles seguros y controles OAuth2;
+- notificaciones SMTP no bloqueantes y configuración declarativa externa.
+
+La documentación completa de instalación, ejecución, reanudación, publicación
+y recuperación se encuentra en el
+[README del Consolidador](./consolidador/README.md).
+
 ## Flujo óptimo recomendado
 
 La generación de cada MBZ suele ser la etapa más costosa. El flujo más
@@ -294,10 +327,12 @@ Consolidador, no editando manualmente los ZIP de origen.
 
 ### Destino
 
-- Servidor Linux según los requisitos del Consolidador.
-- Docker Engine y Docker Compose cuando la distribución del Consolidador los
-  utilice.
-- Moodle destino nuevo o preparado según el manual correspondiente.
+- Consolidador `7.3.0-linux`.
+- Servidor Linux/Ubuntu de 64 bits.
+- Docker Engine y Docker Compose v2.
+- Moodle 5.2.1 nuevo, construido y preparado por la distribución.
+- Capacidad para los paquetes de entrada, MariaDB, Moodle, una extracción
+  temporal por worker y la copia integral final.
 - Almacenamiento persistente y restringido.
 - Acceso administrativo para OAuth2, DNS, TLS y verificaciones finales.
 
@@ -336,6 +371,37 @@ EXPORT_HEARTBEAT completed=12/12 created=0 adopted=12 failed=0
 RECOLECTOR_OK
 VALIDACION_OK archivos=40 cursos=12 advertencias=0
 laboratorio.zip: OK
+```
+
+## Evidencia de aceptación del Consolidador 7.3.0
+
+La versión estable se promovió después de una consolidación integral de
+laboratorio con paquetes sellados del Recolector:
+
+| Comprobación | Resultado |
+|---|---:|
+| Fuentes consolidadas | 2 |
+| Cursos verificados | 15 |
+| Curso piloto | 1 |
+| Cursos del lote paralelo | 14 |
+| Diferencias académicas y técnicas | 0 |
+| Cursos fallidos | 0 |
+| Estado de cierre | `evidence_consolidated` |
+| Modo de mantenimiento restaurado | Sí |
+| Tiempo total observado | 9 min 27 s |
+| Copia integral de fase 8 | Generada y sellada |
+
+```text
+CONSOLIDATED_SITE_PACKAGE_OK courses=15 batch=14 failed=0 maintenance_restored=1
+CONSOLIDATION_ASSISTANT_OK
+Cursos verificados: 15 (piloto + 14 del lote). Diferencias: 0.
+Estado: evidence_consolidated.
+```
+
+SHA-256 de la copia integral producida en esa prueba:
+
+```text
+3d4aeb5285e72425f3d057d5a2fd8a98a893f248c8894d67241a92e255c4bb50
 ```
 
 ## Alcance de la documentación
