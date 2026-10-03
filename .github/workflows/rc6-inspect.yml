@@ -1,0 +1,39 @@
+name: RC6 inspect base
+
+on:
+  push:
+    branches:
+      - codex/rc6-final-adjustments
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract RC5 patched base
+        run: |
+          set -euxo pipefail
+          rm -rf /tmp/rc6-base
+          mkdir -p /tmp/rc6-base
+          unzip -q Consolidador/Consolidador-v8.0.0-linux-rc5-patched.zip -d /tmp/rc6-base
+          find /tmp/rc6-base -maxdepth 2 -type f | sort | sed -n '1,240p'
+      - name: Show relevant sources
+        run: |
+          set -euxo pipefail
+          cd /tmp/rc6-base
+          echo '=== ROOTS ==='
+          find . -maxdepth 2 -type f | sort | sed -n '1,240p'
+          echo '=== VERSION ==='
+          cat VERSION.txt || true
+          echo '=== FUZZY FLOW ==='
+          grep -n -B25 -A60 -E 'IDENTITY_REVIEW_IMPORTED|CANDIDATOS FUZZY|v8-identity-review|05b-readiness' scripts/consolidation-wizard.ps1 || true
+          echo '=== PHASE6 NAMING ==='
+          grep -Rni -B20 -A45 -E 'target_shortname|shortname.*collision|renamed|source_shortname|target_category|category_key' scripts/phase6-*.php scripts/phase6-*.ps1 2>/dev/null | sed -n '1,1400p'
+      - name: Upload extracted base
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc5-patched-extracted
+          path: /tmp/rc6-base
+          include-hidden-files: true
+          retention-days: 3
